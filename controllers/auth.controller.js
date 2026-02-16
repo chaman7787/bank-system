@@ -57,6 +57,58 @@ async function userRegisterController(req, res) {
   }
 }
 
+// login controller
+
+async function userLoginController(req, res) {
+  console.log(req.body);
+  try {
+    const { email, password } = req.body; 
+    const user = await User.findOne({ email }).select("+password");
+
+    if (!user) {
+      return res.status(401).json({
+        msg: "Invalid email or password",
+        status: "failed",
+      });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        msg: "Invalid email or password",
+        status: "failed",
+      });
+    } 
+    const token = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: "3d" }
+    );
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: false, // true in production (HTTPS)
+    }); 
+    res.status(200).json({
+      user: {
+        _id: user._id,
+        email: user.email,
+        name: user.name,
+      },
+      token,
+    }); 
+      
+ 
+}
+catch (error) {
+    res.status(500).json({
+      msg: "Internal server error",
+      error: error.message,
+    });
+  }
+}
+
+
 module.exports ={
-    userRegisterController
+    userRegisterController,
+    userLoginController
 }
