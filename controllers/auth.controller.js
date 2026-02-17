@@ -1,7 +1,11 @@
 const User = require('../models/user.model.js');
 const bcrypt = require("bcrypt");
 const jwt = require('jsonwebtoken')
-require('dotenv').config();
+const sendEmail = require("../services/email.service.js");
+const dotenv = require('dotenv');
+dotenv.config();
+
+
 /* user register controller*/
 
 async function userRegisterController(req, res) {
@@ -40,11 +44,23 @@ async function userRegisterController(req, res) {
       secure: false, // true in production (HTTPS)
     });
 
+
+    // ✅ Send welcome email (non-blocking style)
+    sendEmail(
+      email,
+      "state Bank of india - Welcome to our banking family!",
+      `Hi ${user.name}, your account has been created successfully.`,
+      `<h3>Hi ${user.name} 👋</h3><p>Your account has been created successfully.</p>`
+    ).catch((err) => {
+      console.error("Welcome email failed:", err.message);
+    });
+
     res.status(201).json({
       user: {
         _id: user._id,
         email: user.email,
         name: user.name,
+        sendEmail: "Welcome email sent",
       },
       token,
     });
@@ -60,7 +76,7 @@ async function userRegisterController(req, res) {
 // login controller
 
 async function userLoginController(req, res) {
-  console.log(req.body);
+   
   try {
     const { email, password } = req.body; 
     const user = await User.findOne({ email }).select("+password");
