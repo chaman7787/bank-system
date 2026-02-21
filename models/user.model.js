@@ -15,7 +15,12 @@ password: { type: String,
     minlength: [6,"password should contain 6 character"],
     select:false
 }, 
-
+systemUser: {
+    type: Boolean,
+    default: false,
+    immutable: true,
+    select: false,
+}
 },
 {
     timestamps: true
