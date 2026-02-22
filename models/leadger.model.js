@@ -23,7 +23,7 @@ const leadgerSchema = new mongoose.Schema({
   },
     type: {
         type: String,
-        enum: ["debit", "credit"],
+        enum: ["DEBIT", "CREDIT"],
         required: true,
         immutable: true,
     },

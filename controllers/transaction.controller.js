@@ -128,11 +128,70 @@ async function createTransactionController(req, res) {
 async function createInitialFundsTransactions(req, res) {
 
 try {
-       const {toAccount, amount, idempotencyKey} = req.body;
+          const { toAccount, amount, idempotencyKey } = req.body
 
-        if (!toAccount || !amount || !idempotencyKey) {
-            return res.status(400).json({ message: "Missing required fields" });
-        }
+    if (!toAccount || !amount || !idempotencyKey) {
+        return res.status(400).json({
+            message: "toAccount, amount and idempotencyKey are required"
+        })
+    }
+
+    const toUserAccount = await Account.findOne({
+        _id: toAccount,
+    })
+
+    if (!toUserAccount) {
+        return res.status(400).json({
+            message: "Invalid toAccount"
+        })
+    }
+
+    const fromUserAccount = await Account.findOne({
+        user: req.user._id
+    })
+
+    if (!fromUserAccount) {
+        return res.status(400).json({
+            message: "System user account not found"
+        })
+    }
+
+
+    const session = await mongoose.startSession()
+    session.startTransaction()
+
+    const transaction = new Transaction({
+        fromAccount: fromUserAccount._id,
+        toAccount,
+        amount,
+        idempotencyKey,
+        status: "PENDING"
+    })
+
+    const debitLedgerEntry = await  Leadger.create([ {
+        account: fromUserAccount._id,
+        amount: amount,
+        transaction: transaction._id,
+        type: "DEBIT"
+    } ], { session })
+
+    const creditLedgerEntry = await Leadger.create([ {
+        account: toAccount,
+        amount: amount,
+        transaction: transaction._id,
+        type: "CREDIT"
+    } ], { session })
+
+    transaction.status = "COMPLETED"
+    await transaction.save({ session })
+
+    await session.commitTransaction()
+    session.endSession()
+
+    return res.status(201).json({
+        message: "Initial funds transaction completed successfully",
+        transaction: transaction
+    })
 }catch (error) {
         console.error("Error creating initial transactions:", error);
         res.status(500).json({ message: "Internal server error" });
@@ -141,5 +200,5 @@ try {
 
 module.exports = {
     createTransactionController,
-    createInitialTransactions
+    createInitialFundsTransactions
 };
