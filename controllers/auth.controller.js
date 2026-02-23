@@ -1,8 +1,11 @@
 const User = require('../models/user.model.js');
+
 const bcrypt = require("bcrypt");
 const jwt = require('jsonwebtoken')
 const sendEmail = require("../services/email.service.js");
 const dotenv = require('dotenv');
+const TokenBlacklist = require('../models/tokenBlacklist.model.js');
+
 dotenv.config();
 
 
@@ -123,8 +126,41 @@ catch (error) {
   }
 }
 
+//logout controller
+
+async function userLogoutController(req, res) {
+  try {
+    const token = req.cookies.token || req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res.status(400).json({
+        msg: "No token provided",
+      });
+    }
+   
+
+    await TokenBlacklist.create({
+      token,
+    }); 
+
+    res.clearCookie("token");
+
+    res.status(200).json({
+      msg: "Logged out successfully",
+    }); 
+  
+
+  }
+  catch (error) {
+    res.status(500).json({
+      msg: "Internal server error", 
+      error: error.message,
+    });
+  }
+}
+
 
 module.exports ={
     userRegisterController,
-    userLoginController
+    userLoginController,
+    userLogoutController
 }
