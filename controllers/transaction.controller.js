@@ -5,125 +5,126 @@ const sendEmail = require("../services/email.service.js");
 const mongoose = require('mongoose');
 
 async function createTransactionController(req, res) {
+  try {
+
+    const { fromAccount, toAccount, amount, idempotencyKey } = req.body;
+
+    if (!fromAccount || !toAccount || !amount || !idempotencyKey) {
+      return res.status(400).json({
+        message: "FromAccount, toAccount, amount and idempotencyKey are required"
+      });
+    }
+
+    const fromUserAccount = await Account.findOne({ _id: fromAccount });
+    const toUserAccount = await Account.findOne({ _id: toAccount });
+
+    if (!fromUserAccount || !toUserAccount) {
+      return res.status(400).json({
+        message: "Invalid fromAccount or toAccount"
+      });
+    }
+
+    const isTransactionAlreadyExists = await Transaction.findOne({
+      idempotencyKey: idempotencyKey
+    });
+
+    if (isTransactionAlreadyExists) {
+      if (isTransactionAlreadyExists.status === "COMPLETED") {
+        return res.status(200).json({
+          message: "Transaction already processed",
+          transaction: isTransactionAlreadyExists
+        });
+      }
+
+      if (isTransactionAlreadyExists.status === "PENDING") {
+        return res.status(200).json({
+          message: "Transaction is still processing"
+        });
+      }
+
+      return res.status(400).json({
+        message: `Transaction status is ${isTransactionAlreadyExists.status}`
+      });
+    }
+
+    if (fromUserAccount.status !== "ACTIVE" || toUserAccount.status !== "ACTIVE") {
+      return res.status(400).json({
+        message: "Both accounts must be ACTIVE"
+      });
+    }
+
+    const balance = await fromUserAccount.getBalance();
+
+    if (balance < amount) {
+      return res.status(400).json({
+        message: `Insufficient balance. Current balance is ${balance}`
+      });
+    }
+
+    let transaction;
+    const session = await mongoose.startSession();
+
     try {
 
-        //validate user authentication
-        const { fromAccount, toAccount, amount, idempotencyKey } = req.body;
+      await session.startTransaction();
 
-        // Validate input
-        if (!fromAccount || !toAccount || !amount || !idempotencyKey) {
-            return res.status(400).json({ message: "Missing required fields" });
-        }       
-        // Check if accounts exist
+      transaction = (await Transaction.create([{
+        fromAccount,
+        toAccount,
+        amount,
+        idempotencyKey,
+        status: "PENDING"
+      }], { session }))[0];
 
-        const fromAcc = await Account.findOne({
-            _id: fromAccount,
-        })
+      await Leadger.create([{
+        account: fromAccount,
+        amount,
+        transaction: transaction._id,
+        type: "DEBIT"
+      }], { session });
 
-        const toAcc = await Account.findOne({
-            _id: toAccount,
-        })
+      // ❌ REMOVED 15 second delay (IMPORTANT FIX)
 
-        if(!fromAcc || !toAcc){
-            return res.status(404).json({ message: "One or both accounts not found" });
-        }
+      await Leadger.create([{
+        account: toAccount,
+        amount,
+        transaction: transaction._id,
+        type: "CREDIT"
+      }], { session });
 
+      await Transaction.findOneAndUpdate(
+        { _id: transaction._id },
+        { status: "COMPLETED" },
+        { session }
+      );
 
-    // validate idempotency key
-        const isTransactionAlreadyExists = await Transaction.findOne({ idempotencyKey : idempotencyKey });
-        if (isTransactionAlreadyExists.status === "COMPLETED") {
-            return res.status(400).json({ 
-                message: "Transaction with this idempotency key already exists",
-                transaction: isTransactionAlreadyExists,
-             });
-        }
+      await session.commitTransaction();
+      session.endSession();
 
-        if(isTransactionAlreadyExists.status === "PENDING"){
-            return res.status(400).json({ 
-                message: "Transaction with this idempotency key is already in progress",
-                transaction: isTransactionAlreadyExists,
-             });
-        }
-        if(isTransactionAlreadyExists.status === "FAILED"){
-            return res.status(400).json({ 
-                message: "Transaction with this idempotency key has failed. Please try again with a new idempotency key.",
-             });
-        }
+      // ✅ ADDED SUCCESS RESPONSE (IMPORTANT FIX)
+      return res.status(201).json({
+        message: "Transaction completed successfully",
+        transaction
+      });
 
-        if(isTransactionAlreadyExists.status === "REVERSED"){
-            return res.status(400).json({ 
-                message: "Transaction with this idempotency key has been reversed. Please try again with a new idempotency key.",
-             });
-        }
+    } catch (error) {
 
+      // ✅ ADDED ABORT + END SESSION
+      await session.abortTransaction();
+      session.endSession();
 
-        //check account status
+      console.error("Transaction Error:", error);
 
-        if(fromAcc.status !== "ACTIVE" || toAcc.status !== "ACTIVE"){
-            return res.status(400).json({ message: "Both accounts must be active to perform a transaction" });
-        }
-
-
-        //check sufficient balance
-        const balance = await fromAcc.getBalance();
-        if(balance < amount){
-            return res.status(400).json({ message: `Insufficient balance in the from account . Current balance is ${balance} and requested amount is ${amount}`});
-
-        }
-
-
-        //create transaction
-        const session = await mongoose.startSession();
-        session.startTransaction();
-
-
-        const transaction = new Transaction.create({
-            fromAccount,
-            toAccount,
-            amount,
-            idempotencyKey,
-            status: "PENDING",
-        }, { session });
-
-        const debitLeadgerEntry = new Leadger.create({  
-            account: fromAccount,
-            type: "DEBIT",
-            amount,
-        }, { session });
-
-
-        const creditLeadgerEntry = new Leadger.create({
-            account: toAccount,
-            type: "CREDIT",
-            amount,
-        }, { session });
-
-        transaction.status = "COMPLETED";
-        await transaction.save({ session });
-
-
-        await session.commitTransaction();
-        session.endSession();
-
-
-        //send email notification to both account holders
-        const fromUserEmail = fromAcc.user.email;
-        const toUserEmail = toAcc.user.email;
-        
-        await sendEmail(fromUserEmail, "Transaction Alert", `An amount of ${amount} has been debited from your account ${fromAccount}. Transaction ID: ${transaction._id}`);
-        await sendEmail(toUserEmail, "Transaction Alert", `An amount of ${amount} has been credited to your account ${toAccount}. Transaction ID: ${transaction._id}`); 
-        return res.status(201).json({ message: "Transaction completed successfully", transaction });
-
-            
-            
-        
-
-}catch (error) {
-        console.error("Error creating transaction:", error);
-        res.status(500).json({ message: "Internal server error" });
+      return res.status(500).json({
+        message: "Transaction failed, please retry"
+      });
     }
-}
 
+  } catch (error) {
+    console.error("Error creating transaction:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+}
 
 async function createInitialFundsTransactions(req, res) {
 

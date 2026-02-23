@@ -26,6 +26,7 @@ const transactionSchema = new mongoose.Schema({
         type: String,
         required: true,
         unique: true,
+        // index: true, // Removed to avoid duplicate index
     },
 },
 {
@@ -34,7 +35,7 @@ const transactionSchema = new mongoose.Schema({
 
 transactionSchema.index({ fromAccount: 1 });
 transactionSchema.index({ toAccount: 1 });  
-transactionSchema.index({ idempotencyKey: 1 });
+// transactionSchema.index({ idempotencyKey: 1 }); // Removed to avoid duplicate index
 
 const Transaction = mongoose.model("Transaction", transactionSchema);
 module.exports = Transaction;
