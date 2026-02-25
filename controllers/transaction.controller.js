@@ -5,120 +5,131 @@ const sendEmail = require("../services/email.service.js");
 const mongoose = require('mongoose');
 
 async function createTransactionController(req, res) {
-  try {
-
-    const { fromAccount, toAccount, amount, idempotencyKey } = req.body;
+   const { fromAccount, toAccount, amount, idempotencyKey } = req.body
 
     if (!fromAccount || !toAccount || !amount || !idempotencyKey) {
-      return res.status(400).json({
-        message: "FromAccount, toAccount, amount and idempotencyKey are required"
-      });
+        return res.status(400).json({
+            message: "FromAccount, toAccount, amount and idempotencyKey are required"
+        })
     }
 
-    const fromUserAccount = await Account.findOne({ _id: fromAccount });
-    const toUserAccount = await Account.findOne({ _id: toAccount });
+    const fromUserAccount = await Account.findOne({
+        _id: fromAccount,
+    })
+
+    const toUserAccount = await Account.findOne({
+        _id: toAccount,
+    })
 
     if (!fromUserAccount || !toUserAccount) {
-      return res.status(400).json({
-        message: "Invalid fromAccount or toAccount"
-      });
+        return res.status(400).json({
+            message: "Invalid fromAccount or toAccount"
+        })
     }
+
+    /**
+     * 2. Validate idempotency key
+     */
 
     const isTransactionAlreadyExists = await Transaction.findOne({
-      idempotencyKey: idempotencyKey
-    });
+        idempotencyKey: idempotencyKey
+    })
 
     if (isTransactionAlreadyExists) {
-      if (isTransactionAlreadyExists.status === "COMPLETED") {
-        return res.status(200).json({
-          message: "Transaction already processed",
-          transaction: isTransactionAlreadyExists
-        });
-      }
+        if (isTransactionAlreadyExists.status === "COMPLETED") {
+            return res.status(200).json({
+                message: "Transaction already processed",
+                transaction: isTransactionAlreadyExists
+            })
 
-      if (isTransactionAlreadyExists.status === "PENDING") {
-        return res.status(200).json({
-          message: "Transaction is still processing"
-        });
-      }
+        }
 
-      return res.status(400).json({
-        message: `Transaction status is ${isTransactionAlreadyExists.status}`
-      });
+        if (isTransactionAlreadyExists.status === "PENDING") {
+            return res.status(200).json({
+                message: "Transaction is still processing",
+            })
+        }
+
+        if (isTransactionAlreadyExists.status === "FAILED") {
+            return res.status(500).json({
+                message: "Transaction processing failed, please retry"
+            })
+        }
+
+        if (isTransactionAlreadyExists.status === "REVERSED") {
+            return res.status(500).json({
+                message: "Transaction was reversed, please retry"
+            })
+        }
     }
+
+    /**
+     * 3. Check account status
+     */
 
     if (fromUserAccount.status !== "ACTIVE" || toUserAccount.status !== "ACTIVE") {
-      return res.status(400).json({
-        message: "Both accounts must be ACTIVE"
-      });
+        return res.status(400).json({
+            message: "Both fromAccount and toAccount must be ACTIVE to process transaction"
+        })
     }
 
-    const balance = await fromUserAccount.getBalance();
+    /**
+     * 4. Derive sender balance from ledger
+     */
+    const balance = await fromUserAccount.getBalance()
 
     if (balance < amount) {
-      return res.status(400).json({
-        message: `Insufficient balance. Current balance is ${balance}`
-      });
+        return res.status(400).json({
+            message: `Insufficient balance. Current balance is ${balance}. Requested amount is ${amount}`
+        })
     }
 
     let transaction;
-    const session = await mongoose.startSession();
-
     try {
 
-      await session.startTransaction();
 
-      transaction = (await Transaction.create([{
-        fromAccount,
-        toAccount,
-        amount,
-        idempotencyKey,
-        status: "PENDING"
-      }], { session }))[0];
+        /**
+         * 5. Create transaction (PENDING)
+         */
+        const session = await mongoose.startSession()
+        session.startTransaction()
 
-      await Leadger.create([{
-        account: fromAccount,
-        amount,
-        transaction: transaction._id,
-        type: "DEBIT"
-      }], { session });
+        transaction = (await Transaction.create([ {
+            fromAccount,
+            toAccount,
+            amount,
+            idempotencyKey,
+            status: "PENDING"
+        } ], { session }))[ 0 ]
 
-      // ❌ REMOVED 15 second delay (IMPORTANT FIX)
+        const debitLedgerEntry = await Leadger.create([ {
+            account: fromAccount,
+            amount: amount,
+            transaction: transaction._id,
+            type: "DEBIT"
+        } ], { session })
 
-      await Leadger.create([{
-        account: toAccount,
-        amount,
-        transaction: transaction._id,
-        type: "CREDIT"
-      }], { session });
+        await (() => {
+            return new Promise((resolve) => setTimeout(resolve, 15 * 1000));
+        })()
 
-      await Transaction.findOneAndUpdate(
-        { _id: transaction._id },
-        { status: "COMPLETED" },
-        { session }
-      );
+        const creditLedgerEntry = await Leadger.create([ {
+            account: toAccount,
+            amount: amount,
+            transaction: transaction._id,
+            type: "CREDIT"
+        } ], { session })
 
-      await session.commitTransaction();
-      session.endSession();
+        await Transaction.findOneAndUpdate(
+            { _id: transaction._id },
+            { status: "COMPLETED" },
+            { session }
+        )
 
-      // ✅ ADDED SUCCESS RESPONSE (IMPORTANT FIX)
-      return res.status(201).json({
-        message: "Transaction completed successfully",
-        transaction
-      });
 
-    } catch (error) {
+        await session.commitTransaction()
+        session.endSession();
 
-      // ✅ ADDED ABORT + END SESSION
-      await session.abortTransaction();
-      session.endSession();
-
-      console.error("Transaction Error:", error);
-
-      return res.status(500).json({
-        message: "Transaction failed, please retry"
-      });
-    }
 
   } catch (error) {
     console.error("Error creating transaction:", error);
